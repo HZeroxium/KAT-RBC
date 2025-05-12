@@ -1,99 +1,108 @@
 # /src/main.py
-from pathlib import Path
+
+import os
 from pprint import pprint
-from schemas.index import *
-from schemas.system_io import OASSpecFile
 
-from tools import (
-    SpecLoaderTool,
-    ODGConstructorTool,
-    StaticConstraintMinerTool,
-    DynamicConstraintMinerTool,
-    ConstraintCombinerTool,
-    OperationSequencerTool,
-    TestDataGeneratorTool,
-    TestScriptGeneratorTool,
-    SemanticVerifierTool,
-    TestExecutorTool,
-    ExperienceReinforcementTool,
-    ReporterTool,
-)
+# Import our workflows
+from workflows import CombinedTestingWorkflow, RBCTestWorkflow, KATWorkflow
 
-# ------------------------------------------------------------------#
-# 1. Create minimal mock inputs
-# ------------------------------------------------------------------#
 
-spec_input = SpecLoaderInput(
-    spec_file=OASSpecFile(
-        path=Path("mock.yaml"),
-        content="openapi: 3.1.0\ninfo:\n  title: Mock\n  version: 0.1.0",
+def main():
+    # Example spec file path
+    spec_path = "examples/petstore.yaml"
+
+    # You can load content directly if needed
+    spec_content = None
+    if not os.path.exists(spec_path):
+        spec_content = """
+        openapi: 3.1.0
+        info:
+          title: Mock API
+          version: 0.1.0
+        paths:
+          /pets:
+            get:
+              summary: List all pets
+              responses:
+                '200':
+                  description: A list of pets
+                  content:
+                    application/json:
+                      schema:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Pet'
+            post:
+              summary: Create a pet
+              requestBody:
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/Pet'
+              responses:
+                '201':
+                  description: Created
+        components:
+          schemas:
+            Pet:
+              type: object
+              properties:
+                id:
+                  type: integer
+                  description: The pet ID (must be positive)
+                name:
+                  type: string
+                  description: The pet name (must not be empty)
+                status:
+                  type: string
+                  enum: [available, pending, sold]
+        """
+
+    print("===== Running Combined Testing Workflow =====")
+    # Initialize the combined workflow
+    combined_workflow = CombinedTestingWorkflow()
+
+    # Run the combined workflow
+    result = combined_workflow.run(
+        combined_workflow.input_class(
+            spec_path=spec_path,
+            spec_content=spec_content,
+            target_base_url="https://petstore.swagger.io/v2",
+            save_reports_to="reports/",
+        )
     )
-)
-exec_logs: list[HTTPResponse] = []  # empty for demo
 
-# ------------------------------------------------------------------#
-# 2. Instantiate tools (normally orchestrated via LangGraph / ADK)
-# ------------------------------------------------------------------#
+    # Display the results
+    print("\nDashboard summary:")
+    pprint(result.dashboard.model_dump(), depth=2)
 
-spec_loader = SpecLoaderTool()
-odg_builder = ODGConstructorTool()
-static_miner = StaticConstraintMinerTool()
-dynamic_miner = DynamicConstraintMinerTool()
-combiner = ConstraintCombinerTool()
-sequencer = OperationSequencerTool()
-data_gen = TestDataGeneratorTool()
-script_gen = TestScriptGeneratorTool()
-verifier = SemanticVerifierTool()
-executor = TestExecutorTool()
-reinforce = ExperienceReinforcementTool()
-reporter = ReporterTool()
+    # You can also run individual workflows if needed
+    print("\n===== Running RBCTest Workflow (Constraint-focused) =====")
+    rbctest_workflow = RBCTestWorkflow()
+    rbctest_result = rbctest_workflow.run(
+        rbctest_workflow.input_class(
+            spec_path=spec_path,
+            spec_content=spec_content,
+            target_base_url="https://petstore.swagger.io/v2",
+        )
+    )
 
-# ------------------------------------------------------------------#
-# 3. Run pipeline
-# ------------------------------------------------------------------#
+    print("\nIdentified constraints:")
+    pprint(rbctest_result.unified_constraints, depth=2)
 
-spec_out = spec_loader.run(spec_input)
-odg_out = odg_builder.run(ODGConstructorInput(parsed_spec=spec_out.parsed_spec))
-static_out = static_miner.run(StaticMinerInput(parsed_spec=spec_out.parsed_spec))
-dynamic_out = dynamic_miner.run(DynamicMinerInput(execution_logs=exec_logs))
-comb_out = combiner.run(
-    CombinerInput(
-        static_constraints=static_out.constraints,
-        invariants=dynamic_out.invariants,
+    print("\n===== Running KAT Workflow (Dependency-focused) =====")
+    kat_workflow = KATWorkflow()
+    kat_result = kat_workflow.run(
+        kat_workflow.input_class(
+            spec_path=spec_path,
+            spec_content=spec_content,
+            target_base_url="https://petstore.swagger.io/v2",
+        )
     )
-)
-seq = sequencer.run(odg_out.odg)
-dg_out = data_gen.run(
-    DataGenInput(
-        operation=spec_out.parsed_spec.operations[0],
-        os_deps=odg_out.op_schema_deps,
-        ss_deps=odg_out.schema_schema_deps,
-        parsed_spec=spec_out.parsed_spec,
-    )
-)
-sg_out = script_gen.run(
-    ScriptGenInput(
-        operation_sequence=seq,
-        constraints=comb_out.unified_constraints,
-        data_files=[dg_out.valid_file, dg_out.invalid_file],
-    )
-)
-ver_out = verifier.run(
-    SemanticVerifierInput(
-        generated_tests=sg_out.test_scripts,
-        spec_examples={},
-    )
-)
-exec_out = executor.run(
-    TestExecutorInput(
-        test_code=ver_out.verified_tests,
-        target_base_url="https://api.example.com",
-    )
-)
-reinforce_out = reinforce.run(ReinforcementInput(test_results=exec_out.results))
-report = reporter.run(ReporterInput(results=exec_out.results))
 
-# ------------------------------------------------------------------#
-# 4. Pretty-print final artefact
-# ------------------------------------------------------------------#
-pprint(report.dashboard.model_dump(), depth=4)
+    print("\nOperation Dependency Graph:")
+    pprint(kat_result.odg.model_dump(), depth=2)
+
+
+if __name__ == "__main__":
+    main()

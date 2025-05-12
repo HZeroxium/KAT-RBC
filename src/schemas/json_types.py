@@ -12,6 +12,3 @@ JSON_Base: TypeAlias = Union[JSONPrimitive, List[Any], Dict[str, Any]]
 
 # Then create the proper recursive type using TypeAlias
 JSON: TypeAlias = Union[JSONPrimitive, List[JSON_Base], Dict[str, JSON_Base]]
-
-# This avoids the infinite recursion during schema generation
-# while still providing the correct type information
